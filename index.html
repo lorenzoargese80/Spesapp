@@ -666,10 +666,39 @@ async function ensureToken() {
   });
 }
 
+// Tenta login silenzioso usando dati salvati in localStorage
+async function tryAutoLogin() {
+  const saved = localStorage.getItem('spesapp_user');
+  if (!saved) return false;
+  try {
+    const user = JSON.parse(saved);
+    currentUser = user;
+    // Token silenzioso — nessun popup se la sessione Google è ancora attiva
+    await new Promise((resolve, reject) => {
+      tokenClient.callback = (resp) => {
+        if (resp.error) { reject(new Error(resp.error)); return; }
+        accessToken = resp.access_token;
+        tokenExpiry = Date.now() + (resp.expires_in - 60) * 1000;
+        resolve();
+      };
+      tokenClient.requestAccessToken({ prompt: '' });
+    });
+    return true;
+  } catch {
+    localStorage.removeItem('spesapp_user');
+    return false;
+  }
+}
+
+function saveUserLocally() {
+  localStorage.setItem('spesapp_user', JSON.stringify(currentUser));
+}
+
 function signOut() {
   if (accessToken) {
     try { google.accounts.oauth2.revoke(accessToken, () => {}); } catch {}
   }
+  localStorage.removeItem('spesapp_user');
   accessToken = null; currentUser = { email:'', name:'', picture:'', role:'' };
   expenses = []; users = [];
   if (pieChart) { pieChart.destroy(); pieChart = null; }
@@ -705,6 +734,7 @@ async function afterAuth() {
       showScreen('unauth'); return;
     }
     currentUser.role = me.role;
+    saveUserLocally();
     startApp();
   } catch(e) {
     showToast('⚠️ ' + e.message);
@@ -1247,6 +1277,25 @@ function drawPlaceholder(ctx, msg) {
 // ═══════════════════════════════════════════════
 (async () => {
   await initAuth();
+  // Prova login automatico se l'utente si era già autenticato
+  const saved = localStorage.getItem('spesapp_user');
+  if (saved) {
+    showScreen('loading', 'Accesso automatico…');
+    const ok = await tryAutoLogin();
+    if (ok) {
+      // Token valido — ricarica dati dal Drive con i dati utente cached
+      try {
+        showScreen('loading', 'Caricamento dati…');
+        const wb = await fetchDriveFile();
+        expenses = parseSpese(wb);
+        users    = parseUtenti(wb);
+        startApp();
+        return;
+      } catch(e) {
+        localStorage.removeItem('spesapp_user');
+      }
+    }
+  }
   showScreen('login');
 })();
 
